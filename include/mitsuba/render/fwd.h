@@ -33,6 +33,7 @@ template <typename Float, typename Spectrum> class Texture;
 template <typename Float, typename Spectrum> class Volume;
 template <typename Float, typename Spectrum> class VolumeGrid;
 template <typename Float, typename Spectrum> class MeshAttribute;
+template <typename Float, typename Spectrum> class AnimatedTransform;
 
 template <typename Float, typename Spectrum> struct DirectionSample;
 template <typename Float, typename Spectrum> struct PositionSample;
@@ -95,6 +96,7 @@ template <typename Float_, typename Spectrum_> struct RenderAliases {
     using Texture                = mitsuba::Texture<FloatU, SpectrumU>;
     using Volume                 = mitsuba::Volume<FloatU, SpectrumU>;
     using VolumeGrid             = mitsuba::VolumeGrid<FloatU, SpectrumU>;
+    using AnimatedTransform      = mitsuba::AnimatedTransform<FloatU, SpectrumU>;
 
     using MeshAttribute          = mitsuba::MeshAttribute<FloatU, SpectrumU>;
 

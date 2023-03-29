@@ -209,6 +209,14 @@ public:
         else
             to_object = m_to_object.value();
 
+        dr::mask_t<FloatP> animated = is_animated();
+        
+        to_object                   = dr::select(animated,
+                                                 animated_transform()
+                                                     ->get_transform_packet<FloatP>(ray_.time)
+                                                     .inverse(),
+                                                 to_object);
+
         Ray3fP ray = to_object.transform_affine(ray_);
         FloatP t   = -ray.o.z() / ray.d.z();
         Point<FloatP, 3> local = ray(t);
@@ -233,6 +241,13 @@ public:
             to_object = m_to_object.scalar();
         else
             to_object = m_to_object.value();
+
+        dr::mask_t<FloatP> animated = is_animated();
+        to_object                   = dr::select(animated,
+                                                 animated_transform()
+                                                     ->get_transform_packet<FloatP>(ray_.time)
+                                                     .inverse(),
+                                                 to_object);
 
         Ray3fP ray     = to_object.transform_affine(ray_);
         FloatP t       = -ray.o.z() / ray.d.z();
@@ -264,6 +279,11 @@ public:
 
         Transform4f to_world = m_to_world.value();
         Transform4f to_object = m_to_object.value();
+        Mask animated = is_animated();
+        //dr::masked(to_world, animated) = animated_transform()->get_transform(ray.time);
+        //dr::masked(to_object, animated) = to_world.inverse();
+        to_world = dr::select(animated, animated_transform()->get_transform(ray.time), to_world);
+        to_object = to_world.inverse();
 
         dr::suspend_grad<Float> scope(detach_shape, to_world, to_object, m_frame);
 
@@ -303,12 +323,21 @@ public:
             si.p = p + dist * m_frame.n;
         }
 
-        si.t = dr::select(active, si.t, dr::Infinity<Float>);
+        //Ray3f ray_animated = to_object.transform_affine(ray);
+        //si.p          = dr::select(animated,
+        //                           to_world.transform_affine(ray_animated(pi.t)),
+        //                           si.p);
+        si.t          = dr::select(active, si.t, dr::Infinity<Float>);
+        //si.t          = dr::select(animated,
+        //                           dr::sqrt(dr::squared_norm(si.p - ray.o) / dr::squared_norm(ray.d)),
+        //                           si.t);
 
-        si.n          = m_frame.n;
-        si.sh_frame.n = m_frame.n;
-        si.dp_du      = m_frame.s;
-        si.dp_dv      = m_frame.t;
+        si.n          = dr::select(animated,
+                                   dr::normalize(to_world.transform_affine(m_frame.n)),
+                                   m_frame.n);
+        si.sh_frame.n = si.n;
+        si.dp_du      = dr::select(animated, dr::normalize(to_world.transform_affine(m_frame.s)), m_frame.s);
+        si.dp_dv      = dr::select(animated, dr::normalize(to_world.transform_affine(m_frame.t)), m_frame.t);
         si.uv         = Point2f(dr::fmadd(prim_uv.x(), 0.5f, 0.5f),
                                 dr::fmadd(prim_uv.y(), 0.5f, 0.5f));
 

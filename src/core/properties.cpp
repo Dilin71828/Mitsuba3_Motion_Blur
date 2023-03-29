@@ -325,6 +325,20 @@ std::vector<std::pair<std::string, ref<Object>>> Properties::objects(bool mark_q
     return result;
 }
 
+std::vector<std::pair<std::string, Transform4f>>
+Properties::transforms() const {
+    std::vector<std::pair<std::string, Transform4f>> result;
+    result.reserve(d->entries.size());
+    for (auto &e : d->entries) {
+        auto type = e.second.data.visit(PropertyTypeVisitor());
+        if (type != Type::Transform)
+            continue;
+        result.push_back(std::make_pair(e.first, (const Transform4f &) e.second));
+        e.second.queried = true;
+    }
+    return result;
+}
+
 std::vector<std::string> Properties::unqueried() const {
     std::vector<std::string> result;
     for (const auto &e : d->entries) {

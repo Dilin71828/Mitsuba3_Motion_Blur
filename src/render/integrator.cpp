@@ -399,7 +399,8 @@ SamplingIntegrator<Float, Spectrum>::render_sample(const Scene *scene,
 
     Float time = sensor->shutter_open();
     if (sensor->shutter_open_time() > 0.f)
-        time += sampler->next_1d(active) * sensor->shutter_open_time();
+        time = sampler->next_1d(active);
+        //time += sampler->next_1d(active) * sensor->shutter_open_time();
 
     Float wavelength_sample = 0.f;
     if constexpr (is_spectral_v<Spectrum>)

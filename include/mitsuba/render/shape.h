@@ -24,7 +24,7 @@ NAMESPACE_BEGIN(mitsuba)
 template <typename Float, typename Spectrum>
 class MI_EXPORT_LIB Shape : public Object {
 public:
-    MI_IMPORT_TYPES(BSDF, Medium, Emitter, Sensor, MeshAttribute);
+    MI_IMPORT_TYPES(BSDF, Medium, Emitter, Sensor, MeshAttribute, AnimatedTransform);
 
     // Use 32 bit indices to keep track of indices to conserve memory
     using ScalarIndex = uint32_t;
@@ -414,6 +414,18 @@ public:
     /// Return the area sensor associated with this shape (if any)
     Sensor *sensor(Mask /*unused*/ = true) { return m_sensor.get(); }
 
+    /// Is this shape animated?
+    bool is_animated() const { return m_is_animated; }
+
+    /// Return the animated transform object associated with this shape (if any)
+    const AnimatedTransform *animated_transform() const {
+        return m_animated_transform.get();
+    }
+    /// Return the animated transform object associated with this shape (if any)
+    AnimatedTransform *animated_transform() {
+        return m_animated_transform.get();
+    }
+
     /**
      * \brief Returns the number of sub-primitives that make up this shape
      *
@@ -559,6 +571,7 @@ protected:
     ref<Sensor> m_sensor;
     ref<Medium> m_interior_medium;
     ref<Medium> m_exterior_medium;
+    ref<AnimatedTransform> m_animated_transform;
     std::string m_id;
 
     field<Transform4f, ScalarTransform4f> m_to_world;
@@ -566,6 +579,8 @@ protected:
 
     /// True if the shape is used in a \c ShapeGroup
     bool m_is_instance = false;
+
+    bool m_is_animated = false;
 
 #if defined(MI_ENABLE_CUDA)
     /// OptiX hitgroup data buffer

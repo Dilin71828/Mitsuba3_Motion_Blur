@@ -177,6 +177,9 @@ ref<Object> PluginManager::create_object(const Properties &props,
     if (class_->name() == "Scene")
        return class_->construct(props);
 
+    if (class_->name() == "AnimatedTransform")
+       return class_->construct(props);
+
     std::string variant = class_->variant();
     const Class *plugin_class = get_plugin_class(props.plugin_name(), variant);
 

@@ -370,7 +370,6 @@ template <typename Point_> struct Transform {
 
 // WARNING: the AnimatedTransform class is outdated and dysfunctional with the
 // latest version of Mitsuba 3. Please update this code before using it!
-#if 0
 /**
  * \brief Encapsulates an animated 4x4 homogeneous coordinate transformation
  *
@@ -378,12 +377,25 @@ template <typename Point_> struct Transform {
  * implementation performs a polar decomposition of each keyframe into a 3x3
  * scale/shear matrix, a rotation quaternion, and a translation vector. These
  * will all be interpolated independently at eval time.
+ .. tabs::
+    .. code-tab:: xml
+        :name: ...
+
+        <shape type="...">
+            <animated_transform>
+                <scale x="2" y="10" z="1"/>
+            </animated_transform>
+        </shape>
  */
+template <typename Float, typename Spectrum>
 class MI_EXPORT_LIB AnimatedTransform : public Object {
 public:
-    using Float = float;
     MI_IMPORT_CORE_TYPES()
 
+    /// Instantiate a animated transform from a \ref Properties object
+    AnimatedTransform(const Properties &props);
+
+#if 0
     /// Represents a single keyframe in an animated transform
     struct Keyframe {
         /// Time value associated with this keyframe
@@ -422,8 +434,6 @@ public:
 //      */
     AnimatedTransform(const Transform4f &trafo)
       : m_transform(trafo) { }
-
-    virtual ~AnimatedTransform();
 
     /// Append a keyframe to the current animated transform
     void append(Float time, const Transform4f &trafo);
@@ -528,16 +538,97 @@ public:
     bool operator!=(const AnimatedTransform &t) const {
         return !operator==(t);
     }
+#endif
+    /// Return the number of timesteps
+    uint32_t timestep_count() const { return m_timestep_count; }
 
-    /// Return a human-readable summary of this bitmap
+    /// Return the start time
+    ScalarFloat time_start() const { return m_time_start; }
+    /// Return the end time
+    ScalarFloat time_end() const { return m_time_end; }
+
+    /**
+     * \brief Return an interpolated transformation at given time
+     * \param A queried timestep which should lie between \ref m_time_start
+     * and \ref m_time_end
+    */
+    Transform4f get_transform(Float time) const;
+
+    template<typename FloatP>
+    Transform<Point<FloatP, 4>> get_transform_packet(FloatP time) const {
+        using UInt32P = dr::uint32_array_t<FloatP>;
+        using Transform4fP = Transform<Point<FloatP, 4>>;
+        using Matrix3fP = dr::Matrix<FloatP, 3>;
+        using Matrix4fP = dr::Matrix<FloatP, 4>;
+        using Quaternion4fP = dr::Quaternion<FloatP>;
+        using Vector3fP = Vector<FloatP, 3>;
+        using Vector4fP = Vector<FloatP, 4>;
+
+        if (likely(m_timestep_count <= 1))
+            return Transform4fP();
+
+        UInt32P idx0 = dr::floor2int<UInt32P, FloatP>((time - m_time_start) /
+                                                   m_timestep_length);
+        UInt32P idx1 = idx0 + 1;
+
+        // Compute relative time in [0,1]
+        FloatP t0 = m_time_start + idx0 * m_timestep_length;
+        FloatP t  = dr::minimum(dr::maximum((time - t0) / m_timestep_length, 0.0f), 1.0f);
+
+        // Interpolate scale, rotation and translation separately
+        Matrix3fP M = dr::gather<Matrix3fP>(m_scales.data(), idx0) * (1 - t) +
+                     dr::gather<Matrix3fP>(m_scales.data(), idx1) * t;
+        Quaternion4fP Q =
+            dr::slerp(dr::gather<Quaternion4fP>(m_rotations.data(), idx0),
+                      dr::gather<Quaternion4fP>(m_rotations.data(), idx1), t);
+
+        Vector3fP T0 = dr::head<3>(dr::gather<Vector4fP>(m_translations.data(), idx0));
+        Vector3fP T1 = dr::head<3>(dr::gather<Vector4fP>(m_translations.data(), idx1));
+        T0 *= (1 - t);
+        T1 *= t;
+        Vector3fP T = T0 + T1;
+        //Vector3fP T =
+        //    dr::gather<Vector3fP>(m_translations.data(), idx0) * (1 - t) +
+        //    dr::gather<Vector3fP>(m_translations.data(), idx1) * t;
+
+        return Transform4fP(dr::transform_compose<Matrix4fP>(M, Q, T));
+    }
+
+    /**
+     * \brief Return transformation according to a given timestep.
+     * \param A queried timestep which should lie between 0 to m_timestep_count - 1
+    */
+    ScalarTransform4f get_transform_step(uint32_t timestep) const;
+
+    ScalarTransform4f get_transform_scalar(ScalarFloat time) const;
+
+
+    /// Return a human-readable summary of this object
     virtual std::string to_string() const override;
 
     MI_DECLARE_CLASS()
-private:
-    Transform4f m_transform;
-    std::vector<Keyframe> m_keyframes;
+protected:
+    //AnimatedTransform(const Properties &props);
+    virtual ~AnimatedTransform();
+    void initialize();
+
+protected:
+    uint32_t m_timestep_count;
+    ScalarFloat m_time_start;
+    ScalarFloat m_time_end;
+    ScalarFloat m_timestep_length;
+    std::vector<ScalarTransform4f> m_transforms;
+    std::vector<Matrix3f> m_scales;
+    std::vector<Quaternion4f> m_rotations;
+    std::vector<Vector3f> m_translations;
+
+
+    DynamicBuffer<Matrix3f> m_scales_dr;
+    DynamicBuffer<Quaternion4f> m_rotations_dr;
+    DynamicBuffer<Vector3f> m_translations_dr;
 };
-#endif
+
+MI_EXTERN_CLASS(AnimatedTransform)
 
 // -----------------------------------------------------------------------
 //! @{ \name Printing

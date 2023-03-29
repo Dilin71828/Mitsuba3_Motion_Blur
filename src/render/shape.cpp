@@ -29,6 +29,8 @@ MI_VARIANT Shape<Float, Spectrum>::Shape(const Properties &props) : m_id(props.i
         Sensor *sensor   = dynamic_cast<Sensor *>(obj.get());
         BSDF *bsdf       = dynamic_cast<BSDF *>(obj.get());
         Medium *medium   = dynamic_cast<Medium *>(obj.get());
+        AnimatedTransform *animated_transform =
+            dynamic_cast<AnimatedTransform *>(obj.get());
 
         if (emitter) {
             if (m_emitter)
@@ -52,6 +54,9 @@ MI_VARIANT Shape<Float, Spectrum>::Shape(const Properties &props) : m_id(props.i
                     Throw("Only a single exterior medium can be specified per shape.");
                 m_exterior_medium = medium;
             }
+        } else if (animated_transform) {
+            m_animated_transform = animated_transform;
+            m_is_animated        = true;
         } else {
             continue;
         }
@@ -65,6 +70,15 @@ MI_VARIANT Shape<Float, Spectrum>::Shape(const Properties &props) : m_id(props.i
         if (m_emitter)
             props2.set_float("reflectance", 0);
         m_bsdf = PluginManager::instance()->create_object<BSDF>(props2);
+    }
+
+    if (!m_animated_transform) {
+        Properties props3;
+        props3.set_int("timesteps", 1);
+        props3.set_transform("frame_0", m_to_world.scalar());
+        m_animated_transform =
+            PluginManager::instance()->create_object<AnimatedTransform>(props3);
+        m_is_animated = false;
     }
 
     dr::set_attr(this, "emitter", m_emitter.get());
@@ -101,13 +115,36 @@ void embree_bbox(const struct RTCBoundsFunctionArguments* args) {
     MI_IMPORT_TYPES(Shape)
     const Shape* shape = (const Shape*) args->geometryUserPtr;
     ScalarBoundingBox3f bbox = shape->bbox();
-    RTCBounds* bounds_o = args->bounds_o;
-    bounds_o->lower_x = (float) bbox.min.x();
-    bounds_o->lower_y = (float) bbox.min.y();
-    bounds_o->lower_z = (float) bbox.min.z();
-    bounds_o->upper_x = (float) bbox.max.x();
-    bounds_o->upper_y = (float) bbox.max.y();
-    bounds_o->upper_z = (float) bbox.max.z();
+
+    RTCBounds *bounds_o = args->bounds_o;
+
+    // For animated shape, transform the bbox.
+    if (shape->is_animated()) {
+        ScalarTransform4f to_world =
+            shape->animated_transform()->get_transform_step(args->timeStep);
+        ScalarBoundingBox3f transformed_bbox(to_world.transform_affine(bbox.corner(0)));
+        transformed_bbox.expand(to_world.transform_affine(bbox.corner(1)));
+        transformed_bbox.expand(to_world.transform_affine(bbox.corner(2)));
+        transformed_bbox.expand(to_world.transform_affine(bbox.corner(3)));
+        transformed_bbox.expand(to_world.transform_affine(bbox.corner(4)));
+        transformed_bbox.expand(to_world.transform_affine(bbox.corner(5)));
+        transformed_bbox.expand(to_world.transform_affine(bbox.corner(6)));
+        transformed_bbox.expand(to_world.transform_affine(bbox.corner(7)));
+
+        bounds_o->lower_x = (float) transformed_bbox.min.x();
+        bounds_o->lower_y = (float) transformed_bbox.min.y();
+        bounds_o->lower_z = (float) transformed_bbox.min.z();
+        bounds_o->upper_x = (float) transformed_bbox.max.x();
+        bounds_o->upper_y = (float) transformed_bbox.max.y();
+        bounds_o->upper_z = (float) transformed_bbox.max.z();
+    } else {
+        bounds_o->lower_x = (float) bbox.min.x();
+        bounds_o->lower_y = (float) bbox.min.y();
+        bounds_o->lower_z = (float) bbox.min.z();
+        bounds_o->upper_x = (float) bbox.max.x();
+        bounds_o->upper_y = (float) bbox.max.y();
+        bounds_o->upper_z = (float) bbox.max.z();
+    }
 }
 
 template <typename Float, typename Spectrum>
@@ -136,6 +173,13 @@ void embree_intersect_scalar(int* valid,
 
     ray.o += ray.d * rtc_ray->tnear;
     ray.maxt = rtc_ray->tfar - rtc_ray->tnear;
+
+    // If shape animated, transform ray to interpolated coordinate
+    //if (shape->is_animated()) {
+    //    ray = shape->animated_transform()
+    //        ->get_transform_scalar(rtc_ray->time)
+    //        .inverse().transform_affine(ray);
+    //}
 
     // Check whether this is a shadow ray or not
     if (rtc_hit) {
@@ -173,6 +217,7 @@ static void embree_intersect_packet(int *valid, void *geometryUserPtr,
     using Ray3fP   = Ray<Point<FloatP, 3>, Spectrum>;
     using UInt32P  = dr::uint32_array_t<FloatP>;
     using Float32P = dr::Packet<dr::scalar_t<Float32>, N>;
+    using Transform4fP = Transform<Point<FloatP, 4>>;
 
     const Shape* shape = (const Shape*) geometryUserPtr;
 
@@ -194,6 +239,13 @@ static void embree_intersect_packet(int *valid, void *geometryUserPtr,
              tfar  = dr::load_aligned<Float32P>(rtc_ray->tfar);
     ray.o += ray.d * tnear;
     ray.maxt = tfar - tnear;
+
+    // If shape animated, transform ray to interpolated coordinate
+    //if (shape->is_animated()) {
+    //    ray = shape->animated_transform()
+    //              ->get_transform_packet<FloatP>(ray.time)
+    //              .inverse()*ray;
+    //}
 
     // Check whether this is a shadow ray or not
     if (rtc_hit) {
@@ -295,6 +347,14 @@ MI_VARIANT RTCGeometry Shape<Float, Spectrum>::embree_geometry(RTCDevice device)
     if constexpr (!dr::is_cuda_v<Float>) {
         RTCGeometry geom = rtcNewGeometry(device, RTC_GEOMETRY_TYPE_USER);
         rtcSetGeometryUserPrimitiveCount(geom, 1);
+        // Set timestep counts to support motion blur
+        if (is_animated()) {
+            rtcSetGeometryTimeStepCount(
+                geom, m_animated_transform.get()->timestep_count());
+            rtcSetGeometryTimeRange(geom,
+                                    m_animated_transform.get()->time_start(),
+                                    m_animated_transform.get()->time_end());
+        }
         rtcSetGeometryUserData(geom, (void *) this);
         rtcSetGeometryBoundsFunction(geom, embree_bbox<Float, Spectrum>, nullptr);
         rtcSetGeometryIntersectFunction(geom, embree_intersect<Float, Spectrum>);

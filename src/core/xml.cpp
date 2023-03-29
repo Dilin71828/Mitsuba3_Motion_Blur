@@ -39,7 +39,8 @@ NAMESPACE_BEGIN(xml)
 enum class Tag {
     Boolean, Integer, Float, String, Point, Vector, Spectrum, RGB,
     Transform, Translate, Matrix, Rotate, Scale, LookAt, Object,
-    NamedReference, Include, Alias, Default, Resource, Invalid
+    NamedReference, Include, Alias, Default, Resource, AnimatedTransform, 
+    Invalid
 };
 
 struct Version {
@@ -121,25 +122,26 @@ void register_class(const Class *class_) {
         tag_class = new std::unordered_map<std::string, const Class *>();
 
         // Create an initial mapping of tag names to IDs
-        (*tags)["boolean"]       = Tag::Boolean;
-        (*tags)["integer"]       = Tag::Integer;
-        (*tags)["float"]         = Tag::Float;
-        (*tags)["string"]        = Tag::String;
-        (*tags)["point"]         = Tag::Point;
-        (*tags)["vector"]        = Tag::Vector;
-        (*tags)["transform"]     = Tag::Transform;
-        (*tags)["translate"]     = Tag::Translate;
-        (*tags)["matrix"]        = Tag::Matrix;
-        (*tags)["rotate"]        = Tag::Rotate;
-        (*tags)["scale"]         = Tag::Scale;
-        (*tags)["lookat"]        = Tag::LookAt;
-        (*tags)["ref"]           = Tag::NamedReference;
-        (*tags)["spectrum"]      = Tag::Spectrum;
-        (*tags)["rgb"]           = Tag::RGB;
-        (*tags)["include"]       = Tag::Include;
-        (*tags)["alias"]         = Tag::Alias;
-        (*tags)["default"]       = Tag::Default;
-        (*tags)["path"]          = Tag::Resource;
+        (*tags)["boolean"]            = Tag::Boolean;
+        (*tags)["integer"]            = Tag::Integer;
+        (*tags)["float"]              = Tag::Float;
+        (*tags)["string"]             = Tag::String;
+        (*tags)["point"]              = Tag::Point;
+        (*tags)["vector"]             = Tag::Vector;
+        (*tags)["transform"]          = Tag::Transform;
+        (*tags)["translate"]          = Tag::Translate;
+        (*tags)["matrix"]             = Tag::Matrix;
+        (*tags)["rotate"]             = Tag::Rotate;
+        (*tags)["scale"]              = Tag::Scale;
+        (*tags)["lookat"]             = Tag::LookAt;
+        (*tags)["ref"]                = Tag::NamedReference;
+        (*tags)["spectrum"]           = Tag::Spectrum;
+        (*tags)["rgb"]                = Tag::RGB;
+        (*tags)["include"]            = Tag::Include;
+        (*tags)["alias"]              = Tag::Alias;
+        (*tags)["default"]            = Tag::Default;
+        (*tags)["path"]               = Tag::Resource;
+        (*tags)["animated_transform"] = Tag::AnimatedTransform;
     }
 
     // Register the new class as an object tag
@@ -151,6 +153,9 @@ void register_class(const Class *class_) {
 
     if (alias == "texture")
         (*tag_class)[class_key("spectrum", class_->variant())] = class_;
+    
+    if (alias == "animated_transform")
+        (*tag_class)[class_key(alias, class_->variant())] = class_;
 }
 
 // Called by Class::static_shutdown()
@@ -474,13 +479,14 @@ static std::pair<std::string, std::string> parse_xml(XMLSource &src, XMLParseCon
             tag = Tag::Object;
 
         // Perform some safety checks to make sure that the XML tree really makes sense
-        bool has_parent              = parent_tag != Tag::Invalid;
-        bool parent_is_object        = has_parent && parent_tag == Tag::Object;
-        bool current_is_object       = tag == Tag::Object;
-        bool parent_is_transform     = parent_tag == Tag::Transform;
-        bool current_is_transform_op = tag == Tag::Translate || tag == Tag::Rotate ||
-                                       tag == Tag::Scale || tag == Tag::LookAt ||
-                                       tag == Tag::Matrix;
+        bool has_parent                   = parent_tag != Tag::Invalid;
+        bool parent_is_object             = has_parent && parent_tag == Tag::Object;
+        bool current_is_object            = tag == Tag::Object;
+        bool parent_is_transform          = parent_tag == Tag::Transform;
+        bool current_is_transform_op      = tag == Tag::Translate || tag == Tag::Rotate ||
+                                            tag == Tag::Scale || tag == Tag::LookAt ||
+                                            tag == Tag::Matrix;
+        bool parent_is_animated_transform = parent_tag == Tag::AnimatedTransform;
 
         if (!has_parent && !current_is_object)
             src.throw_error(node, "root element \"%s\" must be an object", node.name());
@@ -492,7 +498,8 @@ static std::pair<std::string, std::string> parse_xml(XMLSource &src, XMLParseCon
                 src.throw_error(node, "transform operations can only occur in a transform node");
         }
 
-        if (has_parent && !parent_is_object && !(parent_is_transform && current_is_transform_op))
+        if (has_parent && !parent_is_object && !(parent_is_transform && current_is_transform_op) && 
+            !parent_is_animated_transform)
             src.throw_error(node, "node \"%s\" cannot occur as child of a property", node.name());
 
         auto version_attr = node.attribute("version");
@@ -590,7 +597,59 @@ static std::pair<std::string, std::string> parse_xml(XMLSource &src, XMLParseCon
                     return std::make_pair(name, id);
                 }
                 break;
+            case Tag::AnimatedTransform: {
+                    check_attributes(src, node, { "id", "name" });
+                    std::string id        = node.attribute("id").value(),
+                                name      = node.attribute("name").value(),
+                                node_name = node.name();
 
+                    Properties props_nested;
+                    props_nested.set_id(id);
+
+                    auto it_inst = ctx.instances.find(id);
+                    if (it_inst != ctx.instances.end())
+                        src.throw_error(node,
+                                        "\"%s\" has duplicate id \"%s\" (previous was at %s)",
+                                        node_name, id, src.offset(it_inst->second.location));
+
+                    auto it2 =
+                        tag_class->find(class_key(node_name, ctx.variant));
+                    if (it2 == tag_class->end())
+                        src.throw_error(node,
+                                        "could not retrieve class object for tag \"%s\" and variant \"%s\"",
+                                        node_name, ctx.variant);
+
+                    size_t arg_counter_nested = 0;
+                    for (pugi::xml_node &ch : node.children()) {
+                        auto [arg_name, nested_id] = parse_xml(
+                            src, ctx, ch, tag, props_nested, param,
+                            arg_counter_nested, depth + 1);
+                        if (nested_id == id)
+                            src.throw_error(node,
+                                            "cannot reference parent id \"%s\" in nested object",
+                                            nested_id);
+                        if (!nested_id.empty())
+                            props_nested.set_named_reference(arg_name,
+                                                             nested_id);
+                    }
+
+                    auto &inst  = ctx.instances[id];
+                    inst.props  = props_nested;
+                    inst.class_ = it2->second;
+                    inst.offset = src.offset;
+                    inst.src_id = src.id;
+#if defined(MI_ENABLE_LLVM) || defined(MI_ENABLE_CUDA)
+                    // Deterministically assign a scope to each scene object
+                    if (ctx.backend && ctx.parallel) {
+                        jit_new_scope((JitBackend) ctx.backend);
+                        inst.scope = jit_scope((JitBackend) ctx.backend);
+                    }
+#endif
+                    inst.location = node.offset_debug();
+
+                    return std::make_pair(name, id);
+                }
+                break;
             case Tag::NamedReference: {
                     check_attributes(src, node, { "name", "id" });
                     auto id = node.attribute("id").value();

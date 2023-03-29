@@ -126,6 +126,11 @@ public:
      */
     std::vector<std::pair<std::string, ref<Object>>> objects(bool mark_queried = true) const;
 
+    /**
+    * \brief Return an array containing all stored transforms
+    */
+    std::vector<std::pair<std::string, ScalarTransform4f>> transforms() const;
+
     /// Return the list of un-queried attributed
     std::vector<std::string> unqueried() const;
 
