@@ -284,3 +284,30 @@ def test09_eval_parameterization(variants_all_ad_rgb):
 
     si_after = shape.eval_parameterization(mi.Point2f(0.3, 0.6))
     assert dr.allclose(si_before.uv, si_after.uv)
+
+def test10_eval_motion_ray_intersect(variant_scalar_rgb):
+    scene = mi.load_dict({
+            "type" : "scene",
+            "foo" : {
+                "type" : "rectangle",
+                "to_world" : mi.ScalarTransform4f.scale((2.0, 0.5, 1.0)),
+                "motion" : {
+                    "timesteps" : 2,
+                    "frame0" : mi.ScalarTransform4f.translate([0, 0, 0]),
+                    "frame1" : mi.ScalarTransform4f.translate([0, -2, 0])
+                }
+            }
+        })
+    n = 20
+    times = dr.linspace(Float, 0, 1, n)
+    rays = [mi.Ray3f(o = [0, 0, -5], d = [0, 0, -1], time = a, wavelengths = []) for a in times]
+    si_scalar = []
+    valid_count = 0
+    for i in range(n):
+        its_found = scene.ray_test(rays[i])
+        si = scene.ray_intersect(rays[i])
+
+        assert its_found == (times[i] <= 0.5)
+        si_scalar.append(si)
+        valid_count += its_found
+    assert valid_count == 10

@@ -101,10 +101,57 @@ void AnimatedTransform<Float, Spectrum>::initialize() {
         m_translations.push_back(T);
     }
     m_timestep_length = (m_time_end - m_time_start) / (m_timestep_count - 1);
+    //for (uint32_t i = 0; i < m_transforms.size(); i++) {
+    //    std::cout << m_scales[i] << '\n';
+    //}
+    //for (uint32_t i = 0; i < m_rotations.size(); i++) {
+    //    std::cout << m_rotations[i] << '\n';
+    //}
+    //for (uint32_t i = 0; i < m_translations.size(); i++) {
+    //    std::cout << m_translations[i] << '\n';
+    //}
 
-    m_scales_dr = dr::load<DynamicBuffer<Matrix3f>>(m_scales.data(), m_scales.size());
-    m_rotations_dr = dr::load<DynamicBuffer<Quaternion4f>>(m_rotations.data(), m_rotations.size());
-    m_translations_dr = dr::load<DynamicBuffer<Vector3f>>(m_translations.data(), m_translations.size());
+    //if constexpr (dr::is_jit_v<Float>) {
+        m_scales_rearranged.resize(9);
+        m_rotations_rearranged.resize(4);
+        m_translations_rearranged.resize(3);
+        std::unique_ptr<float[]> buffer(new float[m_timestep_count]);
+        for (uint32_t x = 0; x < 3; x++) {
+            for (uint32_t y = 0; y < 3; y++) {
+                float *buffer_ptr = buffer.get();
+                for (uint32_t step = 0; step < m_timestep_count; step++) {
+                    dr::store(buffer_ptr, m_scales[step].entry(x, y));
+                    m_scales_rearranged[x * 3 + y].push_back(
+                        dr::load<ScalarFloat>(buffer_ptr, 1));
+                    buffer_ptr += 1;
+                }
+                m_scales_dr.entry(x, y) =
+                    dr::load<Float>(buffer.get(), m_timestep_count);
+            }
+        }
+        for (uint32_t x = 0; x < 4; x++) {
+            float *buffer_ptr = buffer.get();
+            for (uint32_t step = 0; step < m_timestep_count; step++) {
+                dr::store(buffer_ptr, m_rotations[step].entry(x));
+                m_rotations_rearranged[x].push_back(
+                    dr::load<ScalarFloat>(buffer_ptr, 1));
+                buffer_ptr += 1;
+            }
+            m_rotations_dr.entry(x) =
+                dr::load<Float>(buffer.get(), m_timestep_count);
+        }
+        for (uint32_t x = 0; x < 3; x++) {
+            float *buffer_ptr = buffer.get();
+            for (uint32_t step = 0; step < m_timestep_count; step++) {
+                dr::store(buffer_ptr, m_translations[step].entry(x));
+                m_translations_rearranged[x].push_back(
+                    dr::load<ScalarFloat>(buffer_ptr, 1));
+                buffer_ptr += 1;
+            }
+            m_translations_dr.entry(x) =
+                dr::load<Float>(buffer.get(), m_timestep_count);
+        }
+    //}
 }
 
 MI_VARIANT
@@ -135,30 +182,40 @@ AnimatedTransform<Float, Spectrum>::get_transform(Float time) const {
     Float t =
         dr::minimum(dr::maximum((time - t0) / m_timestep_length, 0.0f), 1.0f);
 
+    //std::cout << t << '\n';
+
     // Interpolate scale, rotation and translation separately
-    //Matrix3f M     = dr::gather<Matrix3f>(m_scales.data(), idx0) * (1 - t) +
-    //                 dr::gather<Matrix3f>(m_scales.data(), idx1) * t;
+    if constexpr (dr::is_array_v<Float>) {      
+        Matrix3f M0 = dr::gather<Matrix3f>(m_scales_dr, idx0);
+        Matrix3f M1 = dr::gather<Matrix3f>(m_scales_dr, idx1);
+        Matrix3f M  = M0 * (1 - t) + M1 * t;
+        //std::cout << M << '\n';
 
-    //Quaternion4f Q = dr::slerp(dr::gather<Quaternion4f>(m_rotations.data(), idx0),
-    //                           dr::gather<Quaternion4f>(m_rotations.data(), idx1), t);
-    //
-    //Vector3f T     = dr::head<3>(dr::gather<Vector4f>(m_translations.data(), idx0)) * (1 - t) +
-    //                 dr::head<3>(dr::gather<Vector4f>(m_translations.data(), idx1)) * t;
+        Quaternion4f Q0, Q1;
+        for (uint32_t x = 0; x < 4; x++) {
+            Q0.entry(x) = dr::gather<Float>(m_rotations_dr.entry(x), idx0);
+            Q1.entry(x) = dr::gather<Float>(m_rotations_dr.entry(x), idx1);
+        }
+        //Quaternion4f Q0 = dr::gather<Quaternion4f>(m_rotations_dr, idx0);
+        //Quaternion4f Q1 = dr::gather<Quaternion4f>(m_rotations_dr, idx1);
+        Quaternion4f Q  = dr::slerp(Q0, Q1, t);
+        //std::cout << Q0 << '\n' << Q1 << '\n' << Q << '\n';
 
-    Matrix3f M0 = dr::gather<Matrix3f>(m_scales_dr, idx0);
-    Matrix3f M1 = dr::gather<Matrix3f>(m_scales_dr, idx1);
-    Matrix3f M  = M0 * (1 - t) + M1 * t;
+        Vector3f T0 = dr::gather<Vector3f>(m_translations_dr, idx0);
+        Vector3f T1 = dr::gather<Vector3f>(m_translations_dr, idx1);
+        Vector3f T  = T0 * (1 - t) + T1 * t;
+        //std::cout << T << '\n';
+
+        return Transform4f(dr::transform_compose<Matrix4f>(M, Q, T));
+    } else {
+        Matrix3f M = m_scales[idx0] * (1 - t) + m_scales[idx1] * t;
     
-    Quaternion4f Q0 = dr::gather<Quaternion4f>(m_rotations_dr, idx0);
-    Quaternion4f Q1 = dr::gather<Quaternion4f>(m_rotations_dr, idx1);
-    Quaternion4f Q  = dr::slerp(Q0, Q1, t);
+        Quaternion4f Q = dr::slerp(m_rotations[idx0], m_rotations[idx1], t);
     
-    Vector3f T0 = dr::gather<Vector3f>(m_translations_dr, idx0);
-    Vector3f T1 = dr::gather<Vector3f>(m_translations_dr, idx1);
-    Vector3f T  = T0 * (1 - t) + T1 * t;
-
-    return Transform4f(dr::transform_compose<Matrix4f>(M, Q, T), 
-        dr::transform_compose_inverse<Matrix4f>(M, Q, T));
+        Vector3f T = m_translations[idx0]*(1 - t) + m_translations[idx1] * t;
+    
+        return Transform4f(dr::transform_compose<Matrix4f>(M, Q, T));
+    }
 }
 
 MI_VARIANT typename AnimatedTransform<Float, Spectrum>::ScalarTransform4f 
@@ -186,9 +243,7 @@ AnimatedTransform<Float, Spectrum>::get_transform_scalar(ScalarFloat time) const
     ScalarQuaternion4f Q = dr::slerp(Q0, Q1, t);
     ScalarVector3f T     = T0 * (1 - t) + T1 * t;
 
-    return ScalarTransform4f(
-        dr::transform_compose<ScalarMatrix4f>(M, Q, T),
-        dr::transform_compose_inverse<ScalarMatrix4f>(M, Q, T));
+    return ScalarTransform4f(dr::transform_compose<ScalarMatrix4f>(M, Q, T));
 }
 
 MI_IMPLEMENT_CLASS_VARIANT(AnimatedTransform, Object, "animated_transform")

@@ -417,6 +417,10 @@ public:
     /// Is this shape animated?
     bool is_animated() const { return m_is_animated; }
 
+    uint32_t timesteps() const {
+        return animated_transform()->timestep_count();
+    }
+
     /// Return the animated transform object associated with this shape (if any)
     const AnimatedTransform *animated_transform() const {
         return m_animated_transform.get();

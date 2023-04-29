@@ -203,6 +203,10 @@ public:  // Type-specific getters and setters ----------------------------------
     /// Store a 4x4 homogeneous coordinate transformation in the Properties instance
     void set_transform(const std::string &name, const Transform4f &value, bool error_duplicates = true);
 
+    //void set_animated_transform(const std::string &name,
+    //                            const AnimatedTransform &value,
+    //                            bool error_duplicates = true);
+
 #if 0
     /// Store an animated transformation in the Properties instance
     void set_animated_transform(const std::string &name, ref<AnimatedTransform> value,

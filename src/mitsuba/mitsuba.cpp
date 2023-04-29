@@ -277,6 +277,11 @@ int main(int argc, char *argv[]) {
                     jit_set_flag(JitFlag::VCallRecord, false);
             }
 
+/*************************For debug only***************************/
+            jit_set_flag(JitFlag::LoopRecord, false);
+            jit_set_flag(JitFlag::VCallRecord, false);
+/******************************************************************/
+
             if (*arg_source)
                 jit_set_flag(JitFlag::PrintIR, true);
 

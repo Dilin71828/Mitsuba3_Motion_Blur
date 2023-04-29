@@ -470,7 +470,8 @@ public:
         //     (uint32_t) size(),
         //     [&](Index idx) {
         //         constexpr size_t Stride_ = sizeof(Keyframe); // MSVC: have to redeclare constexpr variable in lambda scope :(
-        //         return dr::gather<Value, Stride_>(m_keyframes.data(), idx, active) < time;
+        //         return 
+        // <Value, Stride_>(m_keyframes.data(), idx, active) < time;
         //     });
 
         // Index idx1 = idx0 + 1;
@@ -572,26 +573,72 @@ public:
         UInt32P idx1 = idx0 + 1;
 
         // Compute relative time in [0,1]
+        //std::cout << time << '\n';
         FloatP t0 = m_time_start + idx0 * m_timestep_length;
         FloatP t  = dr::minimum(dr::maximum((time - t0) / m_timestep_length, 0.0f), 1.0f);
 
+        //std::cout << t << '\n';
+
         // Interpolate scale, rotation and translation separately
-        Matrix3fP M = dr::gather<Matrix3fP>(m_scales.data(), idx0) * (1 - t) +
-                     dr::gather<Matrix3fP>(m_scales.data(), idx1) * t;
-        Quaternion4fP Q =
-            dr::slerp(dr::gather<Quaternion4fP>(m_rotations.data(), idx0),
-                      dr::gather<Quaternion4fP>(m_rotations.data(), idx1), t);
+        if constexpr (dr::is_jit_v<FloatP>) {
+            Matrix3fP M0 = dr::gather<Matrix3fP>(m_scales_dr, idx0);
+            Matrix3fP M1 = dr::gather<Matrix3fP>(m_scales_dr, idx1);
+            Matrix3fP M  = M0 * (1 - t) + M1 * t;
 
-        Vector3fP T0 = dr::head<3>(dr::gather<Vector4fP>(m_translations.data(), idx0));
-        Vector3fP T1 = dr::head<3>(dr::gather<Vector4fP>(m_translations.data(), idx1));
-        T0 *= (1 - t);
-        T1 *= t;
-        Vector3fP T = T0 + T1;
-        //Vector3fP T =
-        //    dr::gather<Vector3fP>(m_translations.data(), idx0) * (1 - t) +
-        //    dr::gather<Vector3fP>(m_translations.data(), idx1) * t;
+            //std::cout << M0 << '\n' << M1 << '\n' << M << '\n';
 
-        return Transform4fP(dr::transform_compose<Matrix4fP>(M, Q, T));
+            Quaternion4fP Q0 = dr::gather<Quaternion4fP>(m_rotations_dr, idx0);
+            Quaternion4fP Q1 = dr::gather<Quaternion4fP>(m_rotations_dr, idx1);
+            Quaternion4fP Q  = dr::slerp(Q0, Q1, t);
+
+            Vector3fP T0 = dr::gather<Vector3fP>(m_translations_dr, idx0);
+            Vector3fP T1 = dr::gather<Vector3fP>(m_translations_dr, idx1);
+            Vector3fP T  = T0 * (1 - t) + T1 * t;
+
+            return Transform4fP(dr::transform_compose<Matrix4fP>(M, Q, T));
+        } else if constexpr (dr::is_array_v<FloatP>) 
+        {
+            Matrix3fP M;
+            for (uint32_t x = 0; x < 3; x++) {
+                for (uint32_t y = 0; y < 3; y++) {
+                    M.entry(x, y) =
+                        dr::gather<FloatP>(m_scales_rearranged[x * 3 + y].data(), idx0) * (1 - t) +
+                        dr::gather<FloatP>(m_scales_rearranged[x * 3 + y].data(), idx1) * t;
+                }            
+            }
+            //std::cout << M << '\n';
+
+            Quaternion4fP Q0, Q1, Q;
+            for (uint32_t x = 0; x < 4; x++) {
+                Q0.entry(x) =
+                    dr::gather<FloatP>(m_rotations_rearranged[x].data(), idx0);
+                Q1.entry(x) =
+                    dr::gather<FloatP>(m_rotations_rearranged[x].data(), idx1);
+            }
+            Q = dr::slerp(Q0, Q1, t);
+            //std::cout << Q0 << '\n' << Q1 << '\n' << Q << '\n';
+
+            Vector3fP T;
+            for (uint32_t x = 0; x < 3; x++) {
+                T.entry(x) =
+                    dr::gather<FloatP>(m_translations_rearranged[x].data(), idx0) * (1 - t) +
+                    dr::gather<FloatP>(m_translations_rearranged[x].data(), idx1) * t;
+            }
+            //std::cout << T << '\n';
+
+            return Transform4fP(dr::transform_compose<Matrix4fP>(M, Q, T));
+
+        } 
+        else {
+            Matrix3fP M = m_scales[idx0] * (1 - t) + m_scales[idx1] * t;
+            //std::cout << M0 << '\n' << M1 << '\n' << M << '\n';
+        
+            Quaternion4fP Q = dr::slerp(m_rotations[idx0], m_rotations[idx1], t);
+        
+            Vector3fP T = m_translations[idx0] * (1 - t) + m_translations[idx1] * t;
+        
+            return Transform4fP(dr::transform_compose<Matrix4fP>(M, Q, T));
+        }
     }
 
     /**
@@ -618,14 +665,17 @@ protected:
     ScalarFloat m_time_end;
     ScalarFloat m_timestep_length;
     std::vector<ScalarTransform4f> m_transforms;
-    std::vector<Matrix3f> m_scales;
-    std::vector<Quaternion4f> m_rotations;
-    std::vector<Vector3f> m_translations;
+    std::vector<ScalarMatrix3f> m_scales;
+    std::vector<ScalarQuaternion4f> m_rotations;
+    std::vector<ScalarVector3f> m_translations;
 
-
-    DynamicBuffer<Matrix3f> m_scales_dr;
-    DynamicBuffer<Quaternion4f> m_rotations_dr;
-    DynamicBuffer<Vector3f> m_translations_dr;
+    Matrix3f m_scales_dr;
+    Quaternion4f m_rotations_dr;
+    Vector3f m_translations_dr;
+    
+    std::vector<std::vector<ScalarFloat>> m_scales_rearranged;
+    std::vector<std::vector<ScalarFloat>> m_rotations_rearranged;
+    std::vector<std::vector<ScalarFloat>> m_translations_rearranged;
 };
 
 MI_EXTERN_CLASS(AnimatedTransform)

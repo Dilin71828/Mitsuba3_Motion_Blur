@@ -47,6 +47,12 @@ Mesh<Float, Spectrum>::Mesh(const std::string &name, ScalarSize vertex_count,
     if (has_vertex_texcoords)
         m_vertex_texcoords = dr::zeros<FloatStorage>(m_vertex_count * 2);
 
+    if (m_is_animated) {
+        for (uint32_t t = 0; t < timesteps(); t++) {
+            m_vertex_positions_animated.push_back(dr::zeros<FloatStorage>(m_vertex_count * 3));
+        }
+    }
+
     initialize();
 }
 
@@ -56,6 +62,23 @@ void Mesh<Float, Spectrum>::initialize() {
     m_vertex_positions_ptr = m_vertex_positions.data();
     m_faces_ptr = m_faces.data();
 #endif
+
+    if (m_is_animated) {
+        std::unique_ptr<float[]> vertex_positions(new float[m_vertex_count * 3]);
+        for (uint32_t step = 0; step < timesteps(); step++) {
+            InputFloat* position_ptr = vertex_positions.get();
+            ScalarTransform4f transform =
+                animated_transform()->get_transform_step(step);
+            for (uint32_t i = 0; i < m_vertex_count; i++) {
+                dr::store(position_ptr,
+                          transform.transform_affine(vertex_position(i)));
+                position_ptr += 3;
+            }
+            m_vertex_positions_animated[step] = dr::load<FloatStorage>(
+                vertex_positions.get(), m_vertex_count * 3);
+        } 
+    }
+
     if (m_emitter || m_sensor)
         ensure_pmf_built();
     mark_dirty();
@@ -1128,13 +1151,28 @@ MI_VARIANT size_t Mesh<Float, Spectrum>::face_data_bytes() const {
 #if defined(MI_ENABLE_EMBREE)
 MI_VARIANT RTCGeometry Mesh<Float, Spectrum>::embree_geometry(RTCDevice device) {
     RTCGeometry geom = rtcNewGeometry(device, RTC_GEOMETRY_TYPE_TRIANGLE);
+    if (is_animated()) {
+        rtcSetGeometryTimeStepCount(
+            geom, m_animated_transform.get()->timestep_count());
+        rtcSetGeometryTimeRange(geom, m_animated_transform.get()->time_start(),
+                                m_animated_transform.get()->time_end());
+    }
 
-    rtcSetSharedGeometryBuffer(geom, RTC_BUFFER_TYPE_VERTEX, 0, RTC_FORMAT_FLOAT3,
-                               m_vertex_positions.data(), 0, 3 * sizeof(InputFloat),
-                               m_vertex_count);
     rtcSetSharedGeometryBuffer(geom, RTC_BUFFER_TYPE_INDEX, 0, RTC_FORMAT_UINT3,
                                m_faces.data(), 0, 3 * sizeof(ScalarIndex),
                                m_face_count);
+    if (is_animated()) {
+        for (uint32_t t = 0; t < m_animated_transform.get()->timestep_count(); t++) {
+            rtcSetSharedGeometryBuffer(geom, RTC_BUFFER_TYPE_VERTEX, t,
+                                       RTC_FORMAT_FLOAT3,
+                                       m_vertex_positions_animated[t].data(), 0,
+                                       3 * sizeof(InputFloat), m_vertex_count);
+        }
+    } else {
+        rtcSetSharedGeometryBuffer(geom, RTC_BUFFER_TYPE_VERTEX, 0,
+                                   RTC_FORMAT_FLOAT3, m_vertex_positions.data(),
+                                   0, 3 * sizeof(InputFloat), m_vertex_count);
+    }
 
     rtcCommitGeometry(geom);
     return geom;

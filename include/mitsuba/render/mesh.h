@@ -438,6 +438,8 @@ protected:
 
     mutable DynamicBuffer<UInt32> m_faces;
 
+    mutable std::vector<FloatStorage> m_vertex_positions_animated;
+
 #if defined(MI_ENABLE_LLVM) && !defined(MI_ENABLE_EMBREE)
     /* Data pointer to ensure triangle intersection routine doesn't rely on
        drjit-core when called from an LLVM kernel */

@@ -280,15 +280,19 @@ public:
         Transform4f to_world = m_to_world.value();
         Transform4f to_object = m_to_object.value();
         Mask animated = is_animated();
-        //dr::masked(to_world, animated) = animated_transform()->get_transform(ray.time);
-        //dr::masked(to_object, animated) = to_world.inverse();
+
         to_world = dr::select(animated, animated_transform()->get_transform(ray.time), to_world);
+        //std::cout << ray.time << '\n' << to_world << '\n';
         to_object = to_world.inverse();
 
         dr::suspend_grad<Float> scope(detach_shape, to_world, to_object, m_frame);
 
         SurfaceInteraction3f si = dr::zeros<SurfaceInteraction3f>();
         Point2f prim_uv = pi.prim_uv;
+
+        Normal3f n = dr::normalize(to_world * Normal3f(0.f, 0.f, 1.f));
+        Vector3f dp_du = to_world * Vector3f(2.f, 0.f, 0.f);
+        Vector3f dp_dv = to_world * Vector3f(0.f, 2.f, 0.f);
 
         if constexpr (IsDiff) {
             if (follow_shape) {
@@ -319,25 +323,17 @@ public:
             si.t = pi.t;
             // Re-project onto the rectangle to improve accuracy
             Point3f p = ray(pi.t);
-            Float dist = dr::dot(to_world.translation() - p, m_frame.n);
-            si.p = p + dist * m_frame.n;
+            Float dist = dr::dot(to_world.translation() - p, 
+                dr::select(animated, n, m_frame.n));
+            si.p = p + dist * dr::select(animated, n, m_frame.n);
         }
 
-        //Ray3f ray_animated = to_object.transform_affine(ray);
-        //si.p          = dr::select(animated,
-        //                           to_world.transform_affine(ray_animated(pi.t)),
-        //                           si.p);
         si.t          = dr::select(active, si.t, dr::Infinity<Float>);
-        //si.t          = dr::select(animated,
-        //                           dr::sqrt(dr::squared_norm(si.p - ray.o) / dr::squared_norm(ray.d)),
-        //                           si.t);
 
-        si.n          = dr::select(animated,
-                                   dr::normalize(to_world.transform_affine(m_frame.n)),
-                                   m_frame.n);
+        si.n          = dr::select(animated, n, m_frame.n);
         si.sh_frame.n = si.n;
-        si.dp_du      = dr::select(animated, dr::normalize(to_world.transform_affine(m_frame.s)), m_frame.s);
-        si.dp_dv      = dr::select(animated, dr::normalize(to_world.transform_affine(m_frame.t)), m_frame.t);
+        si.dp_du      = dr::select(animated, dp_du, m_frame.s);
+        si.dp_dv      = dr::select(animated, dp_dv, m_frame.t);
         si.uv         = Point2f(dr::fmadd(prim_uv.x(), 0.5f, 0.5f),
                                 dr::fmadd(prim_uv.y(), 0.5f, 0.5f));
 
@@ -348,6 +344,7 @@ public:
         if (unlikely(has_flag(ray_flags, RayFlags::BoundaryTest)))
             si.boundary_test = dr::min(0.5f - dr::abs(si.uv - 0.5f));
 
+        //std::cout << si << '\n';
         return si;
     }
 

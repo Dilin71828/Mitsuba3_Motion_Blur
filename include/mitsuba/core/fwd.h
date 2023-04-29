@@ -171,6 +171,8 @@ template <typename Float_> struct CoreAliases {
     using Transform3d = Transform<Point3d>;
     using Transform4d = Transform<Point4d>;
 
+    //using AnimatedTransform4f = AnimatedTransform<Float, >
+
     using Color1f = Color<Float, 1>;
     using Color3f = Color<Float, 3>;
     using Color1d = Color<Float64, 1>;

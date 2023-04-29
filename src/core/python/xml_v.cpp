@@ -251,6 +251,7 @@ std::vector<ref<Object>> load_dict(const std::string &dict_key,
         SET_PROPS(ScalarColor3f, ScalarColor3f, set_color);
         SET_PROPS(ScalarArray3f, ScalarArray3f, set_array3f);
         SET_PROPS(ScalarTransform4f, ScalarTransform4f, set_transform);
+        //SET_PROPS()
 
         // Load nested dictionary
         if (py::isinstance<py::dict>(value)) {
