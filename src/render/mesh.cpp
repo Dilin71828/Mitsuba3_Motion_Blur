@@ -47,12 +47,6 @@ Mesh<Float, Spectrum>::Mesh(const std::string &name, ScalarSize vertex_count,
     if (has_vertex_texcoords)
         m_vertex_texcoords = dr::zeros<FloatStorage>(m_vertex_count * 2);
 
-    if (m_is_animated) {
-        for (uint32_t t = 0; t < timesteps(); t++) {
-            m_vertex_positions_animated.push_back(dr::zeros<FloatStorage>(m_vertex_count * 3));
-        }
-    }
-
     initialize();
 }
 
@@ -65,6 +59,7 @@ void Mesh<Float, Spectrum>::initialize() {
 
     if (m_is_animated) {
         std::unique_ptr<float[]> vertex_positions(new float[m_vertex_count * 3]);
+        m_vertex_positions_animated.resize(timesteps());
         for (uint32_t step = 0; step < timesteps(); step++) {
             InputFloat* position_ptr = vertex_positions.get();
             ScalarTransform4f transform =
@@ -666,11 +661,16 @@ Mesh<Float, Spectrum>::compute_surface_interaction(const Ray3f &ray,
 
     constexpr bool IsDiff = dr::is_diff_v<Float>;
 
+    dr::mask_t<Float> animated = is_animated();
+    Transform4f to_world =dr::select(animated, 
+                                      animated_transform()->get_transform(ray.time),
+                                      Transform4f());
+
     Vector3u fi = face_indices(pi.prim_index, active);
 
-    Point3f p0 = vertex_position(fi[0], active),
-            p1 = vertex_position(fi[1], active),
-            p2 = vertex_position(fi[2], active);
+    Point3f p0 = to_world*vertex_position(fi[0], active),
+            p1 = to_world*vertex_position(fi[1], active),
+            p2 = to_world*vertex_position(fi[2], active);
 
     Float t = pi.t;
     Point2f prim_uv = pi.prim_uv;
@@ -779,9 +779,9 @@ Mesh<Float, Spectrum>::compute_surface_interaction(const Ray3f &ray,
         likely(has_flag(ray_flags, RayFlags::ShadingFrame) ||
                has_flag(ray_flags, RayFlags::dNSdUV) ||
                has_flag(ray_flags, RayFlags::BoundaryTest))) {
-        n0 = vertex_normal(fi[0], active);
-        n1 = vertex_normal(fi[1], active);
-        n2 = vertex_normal(fi[2], active);
+        n0 = dr::normalize(to_world * vertex_normal(fi[0], active));
+        n1 = dr::normalize(to_world * vertex_normal(fi[1], active));
+        n2 = dr::normalize(to_world * vertex_normal(fi[2], active));
     }
 
     if (has_vertex_normals() &&
@@ -1150,32 +1150,66 @@ MI_VARIANT size_t Mesh<Float, Spectrum>::face_data_bytes() const {
 
 #if defined(MI_ENABLE_EMBREE)
 MI_VARIANT RTCGeometry Mesh<Float, Spectrum>::embree_geometry(RTCDevice device) {
-    RTCGeometry geom = rtcNewGeometry(device, RTC_GEOMETRY_TYPE_TRIANGLE);
+    // For animated mesh, embree only support spherical interpolation for instanced objects.
+    // Here we wrap animated mesh in a instanced scene contains only one mesh.
     if (is_animated()) {
-        rtcSetGeometryTimeStepCount(
-            geom, m_animated_transform.get()->timestep_count());
-        rtcSetGeometryTimeRange(geom, m_animated_transform.get()->time_start(),
-                                m_animated_transform.get()->time_end());
-    }
-
-    rtcSetSharedGeometryBuffer(geom, RTC_BUFFER_TYPE_INDEX, 0, RTC_FORMAT_UINT3,
-                               m_faces.data(), 0, 3 * sizeof(ScalarIndex),
-                               m_face_count);
-    if (is_animated()) {
-        for (uint32_t t = 0; t < m_animated_transform.get()->timestep_count(); t++) {
-            rtcSetSharedGeometryBuffer(geom, RTC_BUFFER_TYPE_VERTEX, t,
-                                       RTC_FORMAT_FLOAT3,
-                                       m_vertex_positions_animated[t].data(), 0,
-                                       3 * sizeof(InputFloat), m_vertex_count);
-        }
-    } else {
+        // create a new scene to handle instance
+        m_embree_scene = rtcNewScene(device);
+        RTCGeometry geom = rtcNewGeometry(device, RTC_GEOMETRY_TYPE_TRIANGLE);
+        rtcSetSharedGeometryBuffer(geom, RTC_BUFFER_TYPE_INDEX, 0,
+                                   RTC_FORMAT_UINT3, m_faces.data(), 0,
+                                   3 * sizeof(ScalarIndex), m_face_count);
         rtcSetSharedGeometryBuffer(geom, RTC_BUFFER_TYPE_VERTEX, 0,
                                    RTC_FORMAT_FLOAT3, m_vertex_positions.data(),
                                    0, 3 * sizeof(InputFloat), m_vertex_count);
-    }
+        rtcCommitGeometry(geom);
+        rtcAttachGeometry(m_embree_scene, geom);
+        rtcReleaseGeometry(geom);
+        rtcCommitScene(m_embree_scene);
 
-    rtcCommitGeometry(geom);
-    return geom;
+        RTCGeometry geom_instance =
+            rtcNewGeometry(device, RTC_GEOMETRY_TYPE_INSTANCE);
+        rtcSetGeometryInstancedScene(geom_instance, m_embree_scene);
+        rtcSetGeometryTimeStepCount(
+            geom_instance, m_animated_transform.get()->timestep_count());
+        rtcSetGeometryTimeRange(geom_instance, m_animated_transform.get()->time_start(),
+                                m_animated_transform.get()->time_end());
+
+        // Set decomposed transformation for each frame.
+        for (uint32_t t = 0; t < m_animated_transform.get()->timestep_count(); t++) {
+            RTCQuaternionDecomposition qdecomp;
+            rtcInitQuaternionDecomposition(&qdecomp);
+            dr::Matrix<ScalarFloat32, 4> matrix(
+                (m_animated_transform.get()->get_transform_step(t)).matrix);
+            auto [M, Q, T] = dr::transform_decompose<ScalarFloat32>(matrix);
+            qdecomp.scale_x       = M.entry(0, 0);
+            qdecomp.scale_y       = M.entry(1, 1);
+            qdecomp.scale_z       = M.entry(2, 2);
+            qdecomp.quaternion_r  = Q.entry(3);
+            qdecomp.quaternion_i  = Q.entry(0);
+            qdecomp.quaternion_j  = Q.entry(1);
+            qdecomp.quaternion_k  = Q.entry(2);
+            qdecomp.translation_x = T.entry(0);
+            qdecomp.translation_y = T.entry(1);
+            qdecomp.translation_z = T.entry(2);
+            //rtcSetGeometryTransform(geom_instance, t, RTC_FORMAT_FLOAT4X4_COLUMN_MAJOR, &matrix);
+            rtcSetGeometryTransformQuaternion(geom_instance, t, &qdecomp);
+        }
+        rtcCommitGeometry(geom_instance);
+        return geom_instance;
+
+    } else {
+        RTCGeometry geom = rtcNewGeometry(device, RTC_GEOMETRY_TYPE_TRIANGLE);
+        rtcSetSharedGeometryBuffer(geom, RTC_BUFFER_TYPE_INDEX, 0,
+                                   RTC_FORMAT_UINT3, m_faces.data(), 0,
+                                   3 * sizeof(ScalarIndex), m_face_count);
+        rtcSetSharedGeometryBuffer(geom, RTC_BUFFER_TYPE_VERTEX, 0,
+                                   RTC_FORMAT_FLOAT3, m_vertex_positions.data(),
+                                   0, 3 * sizeof(InputFloat), m_vertex_count);
+
+        rtcCommitGeometry(geom);
+        return geom;
+    }
 }
 #endif
 

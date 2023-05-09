@@ -467,6 +467,10 @@ protected:
 
     /// Pointer to the scene that owns this mesh
     Scene<Float, Spectrum>* m_scene = nullptr;
+
+#if defined(MI_ENABLE_EMBREE)
+    RTCScene m_embree_scene = nullptr;
+#endif
 };
 
 MI_EXTERN_CLASS(Mesh)
