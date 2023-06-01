@@ -56,12 +56,26 @@ template <typename Shape>
 void fill_hitgroup_records(std::vector<ref<Shape>> &shapes,
                            std::vector<HitGroupSbtRecord> &out_hitgroup_records,
                            const OptixProgramGroup *program_groups) {
-    for (size_t i = 0; i < 2; i++) {
-        for (Shape* shape: shapes) {
+    //for (size_t i = 0; i < 2; i++) {
+    //    for (Shape* shape: shapes) {
             // This trick allows meshes to be processed first
-            if (i == !shape->is_mesh())
-                shape->optix_fill_hitgroup_records(out_hitgroup_records, program_groups);
-        }
+    //        if (i == !shape->is_mesh())
+    //            shape->optix_fill_hitgroup_records(out_hitgroup_records, program_groups);
+    //    }
+    //}
+    // 
+    // Process order: mesh(static), customed shape, animated mesh
+    for (Shape *shape : shapes) {
+        if (shape->is_mesh() && !shape->is_animated())
+            shape->optix_fill_hitgroup_records(out_hitgroup_records,program_groups);
+    }
+    for (Shape *shape : shapes) {
+        if (!shape->is_mesh() && !shape->is_animated())
+            shape->optix_fill_hitgroup_records(out_hitgroup_records,program_groups);
+    }
+    for (Shape *shape : shapes) {
+        if (shape->is_mesh() && shape->is_animated())
+            shape->optix_fill_hitgroup_records(out_hitgroup_records,program_groups);
     }
 }
 
@@ -79,9 +93,10 @@ void build_gas(const OptixDeviceContext &context,
     // Separate meshes and custom shapes
     std::vector<ref<Shape>> shape_meshes, shape_others;
     for (auto shape: shapes) {
-        if (shape->is_mesh())
+        // GAS of animated meshes should be built separately
+        if (shape->is_mesh() && !shape->is_animated())
             shape_meshes.push_back(shape);
-        else if (!shape->is_instance())
+        else if (!shape->is_instance() && !shape->is_mesh())
             shape_others.push_back(shape);
     }
 
@@ -222,8 +237,14 @@ void prepare_ias(const OptixDeviceContext &context,
         out_instances.push_back(others_instance);
     }
 
+    // Apply the same process to every animated shapes
+    for (Shape *shape : shapes) {
+        if (shape->is_animated())
+            shape->optix_prepare_ias(context, out_instances, jit_registry_get_id(JitBackend::CUDA, shape), transf);
+    }
+
     // Apply the same process to every shape instances
-    for (Shape* shape: shapes) {
+    for (Shape *shape : shapes) {
         if (shape->is_instance())
             shape->optix_prepare_ias(context, out_instances, jit_registry_get_id(JitBackend::CUDA, shape), transf);
     }

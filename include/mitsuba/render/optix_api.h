@@ -81,6 +81,10 @@ using OptixDenoiserStructPtr = void*;
 
 #define OPTIX_MODULE_COMPILE_STATE_COMPLETED 0x2364
 
+#define OPTIX_MOTION_FLAG_NONE         0
+#define OPTIX_MOTION_FLAG_START_VANISH (1u << 0)
+#define OPTIX_MOTION_FLAG_END_VANISH   (1u << 1)
+
 // =====================================================
 //          Commonly used OptiX data structures
 // =====================================================
@@ -289,6 +293,33 @@ struct OptixDenoiserLayer {
     OptixImage2D output;
 };
 
+struct OptixSRTData {
+    float sx, a, b, pvx, sy, c, pvy, sz, pvz, qx, qy, qz, qw, tx, ty, tz;
+};
+
+struct OptixSRTMotionTransform {
+    /// The traversable transformed by this transformation
+    OptixTraversableHandle child;
+
+    /// The motion options for this transformation
+    OptixMotionOptions motionOptions;
+
+    /// Padding to make the SRT data 16 byte aligned
+    unsigned int pad[3];
+
+    /// The actual SRT data describing the transformation
+    OptixSRTData srtData[2];
+};
+
+enum OptixTraversableType {
+    /// Static transforms. \see #OptixStaticTransform
+    OPTIX_TRAVERSABLE_TYPE_STATIC_TRANSFORM = 0x21C1,
+    /// Matrix motion transform. \see #OptixMatrixMotionTransform
+    OPTIX_TRAVERSABLE_TYPE_MATRIX_MOTION_TRANSFORM = 0x21C2,
+    /// SRT motion transform. \see #OptixSRTMotionTransform
+    OPTIX_TRAVERSABLE_TYPE_SRT_MOTION_TRANSFORM = 0x21C3,
+};
+
 // =====================================================
 //             Commonly used OptiX functions
 // =====================================================
@@ -329,6 +360,8 @@ D(optixDenoiserInvoke, OptixDenoiserStructPtr, CUstream,
   unsigned int, unsigned int, CUdeviceptr, size_t);
 D(optixDenoiserComputeIntensity, OptixDenoiserStructPtr, CUstream,
   const OptixImage2D *inputImage, CUdeviceptr, CUdeviceptr, size_t);
+D(optixConvertPointerToTraversableHandle, OptixDeviceContext, CUdeviceptr,
+  OptixTraversableType, OptixTraversableHandle *);
 
 #undef D
 

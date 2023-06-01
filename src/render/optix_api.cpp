@@ -31,6 +31,7 @@ void optix_initialize() {
     L(optixDenoiserSetup);
     L(optixDenoiserInvoke);
     L(optixDenoiserComputeIntensity);
+    L(optixConvertPointerToTraversableHandle);
 
     #undef L
 }

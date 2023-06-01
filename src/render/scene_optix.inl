@@ -56,12 +56,13 @@ struct OptixConfig {
 };
 
 // Array storing previously initialized optix configurations
-static constexpr int32_t OPTIX_CONFIG_COUNT = 8;
+static constexpr int32_t OPTIX_CONFIG_COUNT = 16;
 static OptixConfig optix_configs[OPTIX_CONFIG_COUNT] = {};
 
-size_t init_optix_config(bool has_meshes, bool has_others, bool has_instances) {
+size_t init_optix_config(bool has_meshes, bool has_others, bool has_instances, bool has_animations) {
     // Compute config index in optix_configs based on required set of features
     size_t config_index =
+        (has_animations ? 8 : 0) +
         (has_instances ? 4 : 0) +
         (has_meshes ? 2 : 0) +
         (has_others ? 1 : 0);
@@ -85,10 +86,10 @@ size_t init_optix_config(bool has_meshes, bool has_others, bool has_instances) {
         module_compile_options.debugLevel       = OPTIX_COMPILE_DEBUG_LEVEL_NONE;
     #else
         module_compile_options.optLevel         = OPTIX_COMPILE_OPTIMIZATION_LEVEL_0;
-        module_compile_options.debugLevel       = OPTIX_COMPILE_DEBUG_LEVEL_MINIMAL;
+        module_compile_options.debugLevel = OPTIX_COMPILE_DEBUG_LEVEL_MINIMAL;
     #endif
 
-        config.pipeline_compile_options.usesMotionBlur     = false;
+        config.pipeline_compile_options.usesMotionBlur     = has_animations;
         config.pipeline_compile_options.numPayloadValues   = 6;
         config.pipeline_compile_options.numAttributeValues = 2; // the minimum legal value
         config.pipeline_compile_options.pipelineLaunchParamsVariableName = "params";
@@ -300,11 +301,13 @@ MI_VARIANT void Scene<Float, Spectrum>::accel_init_gpu(const Properties &props) 
             bool has_meshes = false;
             bool has_others = false;
             bool has_instances = false;
+            bool has_animations = false;
 
             for (auto& shape : m_shapes) {
-                has_meshes    |= shape->is_mesh();
-                has_others    |= !shape->is_mesh() && !shape->is_instance();
-                has_instances |= shape->is_instance();
+                has_meshes     |= shape->is_mesh();
+                has_others     |= !shape->is_mesh() && !shape->is_instance();
+                has_instances  |= shape->is_instance() || shape->is_animated();
+                has_animations |= shape->is_animated();
             }
 
             for (auto& shape : m_shapegroups) {
@@ -312,7 +315,7 @@ MI_VARIANT void Scene<Float, Spectrum>::accel_init_gpu(const Properties &props) 
                 has_others |= !shape->has_others();
             }
 
-            s.config_index = init_optix_config(has_meshes, has_others, has_instances);
+            s.config_index = init_optix_config(has_meshes, has_others, has_instances, has_animations);
             const OptixConfig &config = optix_configs[s.config_index];
 
             // =====================================================
@@ -386,6 +389,7 @@ MI_VARIANT void Scene<Float, Spectrum>::accel_parameters_changed_gpu() {
             } else {
                 // Build a "master" IAS that contains all the IAS of the scene (meshes,
                 // custom shapes, instances, ...)
+                // TODO: decide whether build a motion ias
                 OptixAccelBuildOptions accel_options = {};
                 accel_options.buildFlags = OPTIX_BUILD_FLAG_PREFER_FAST_TRACE;
                 accel_options.operation  = OPTIX_BUILD_OPERATION_BUILD;

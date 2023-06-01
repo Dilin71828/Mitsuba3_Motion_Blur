@@ -56,7 +56,7 @@ void Mesh<Float, Spectrum>::initialize() {
     m_vertex_positions_ptr = m_vertex_positions.data();
     m_faces_ptr = m_faces.data();
 #endif
-
+    /*
     if (m_is_animated) {
         std::unique_ptr<float[]> vertex_positions(new float[m_vertex_count * 3]);
         m_vertex_positions_animated.resize(timesteps());
@@ -73,6 +73,7 @@ void Mesh<Float, Spectrum>::initialize() {
                 vertex_positions.get(), m_vertex_count * 3);
         } 
     }
+    */
 
     if (m_emitter || m_sensor)
         ensure_pmf_built();
@@ -80,7 +81,12 @@ void Mesh<Float, Spectrum>::initialize() {
     Base::initialize();
 }
 
-MI_VARIANT Mesh<Float, Spectrum>::~Mesh() { }
+MI_VARIANT Mesh<Float, Spectrum>::~Mesh() { 
+    if (m_d_gas_buffer)
+        jit_free(m_d_gas_buffer);
+    if (m_d_srt_motion_transform)
+        jit_free(m_d_srt_motion_transform);
+}
 
 MI_VARIANT void Mesh<Float, Spectrum>::traverse(TraversalCallback *callback) {
     Base::traverse(callback);
@@ -1229,6 +1235,157 @@ MI_VARIANT void Mesh<Float, Spectrum>::optix_build_input(OptixBuildInput &build_
     build_input.triangleArray.indexBuffer      = (CUdeviceptr) m_faces.data();
     build_input.triangleArray.flags            = &triangle_input_flags;
     build_input.triangleArray.numSbtRecords    = 1;
+}
+
+MI_VARIANT void Mesh<Float, Spectrum>::optix_fill_hitgroup_records(std::vector<HitGroupSbtRecord> &hitgroup_records,
+                                                                   const OptixProgramGroup *program_groups) {
+    m_sbt_offset = (uint32_t) hitgroup_records.size();
+    optix_prepare_geometry();
+    // Set hitgroup record data
+    hitgroup_records.push_back(HitGroupSbtRecord());
+    hitgroup_records.back().data = {
+        jit_registry_get_id(JitBackend::CUDA, this), m_optix_data_ptr
+    };
+
+    size_t program_group_idx = 1;
+    // Setup the hitgroup record and copy it to the hitgroup records array
+    jit_optix_check(optixSbtRecordPackHeader(program_groups[program_group_idx],
+                                             &hitgroup_records.back()));
+}
+
+MI_VARIANT void Mesh<Float, Spectrum>::optix_prepare_ias(
+    const OptixDeviceContext &context, std::vector<OptixInstance> &instances,
+    uint32_t instance_id, const ScalarTransform4f &transf) {
+    if (!is_animated()) {
+        Throw("optix_prepare_ias should be called with an animated mesh object");
+    }
+
+    // Create GAS
+    // Prepare build input
+    OptixBuildInput build_input = {};
+    optix_build_input(build_input);
+
+    OptixAccelBuildOptions accel_options = {};
+    accel_options.buildFlags =
+        OPTIX_BUILD_FLAG_ALLOW_COMPACTION | OPTIX_BUILD_FLAG_PREFER_FAST_TRACE;
+    accel_options.operation = OPTIX_BUILD_OPERATION_BUILD;
+    accel_options.motionOptions.numKeys = 0;
+
+    dr::sync_thread();
+
+    OptixAccelBufferSizes buffer_sizes;
+    jit_optix_check(optixAccelComputeMemoryUsage(
+        context, 
+        &accel_options, 
+        &build_input,
+        1, 
+        &buffer_sizes
+    ));
+    void *d_temp_buffer = jit_malloc(AllocType::Device, buffer_sizes.tempSizeInBytes);
+    void *output_buffer = jit_malloc(AllocType::Device, buffer_sizes.outputSizeInBytes + 8);
+
+    OptixAccelEmitDesc emit_property = {};
+    emit_property.type = OPTIX_PROPERTY_TYPE_COMPACTED_SIZE;
+    emit_property.result = (CUdeviceptr) ((char *) output_buffer + buffer_sizes.outputSizeInBytes);
+
+    jit_optix_check(optixAccelBuild(
+        context, 
+        (CUstream) jit_cuda_stream(), 
+        &accel_options,
+        &build_input,
+        1, // num build inputs
+        (CUdeviceptr) d_temp_buffer, 
+        buffer_sizes.tempSizeInBytes,
+        (CUdeviceptr) output_buffer, 
+        buffer_sizes.outputSizeInBytes, 
+        &m_gas_handle,
+        &emit_property, // emitted property list
+        1               // num emitted properties
+    ));
+
+    jit_free(d_temp_buffer);
+
+    size_t compact_size;
+    jit_memcpy(JitBackend::CUDA, &compact_size, (void *) emit_property.result, sizeof(size_t));
+    if (compact_size < buffer_sizes.outputSizeInBytes) {
+        void *compact_buffer = jit_malloc(AllocType::Device, compact_size);
+        // Use handle as input and output
+        jit_optix_check(optixAccelCompact(
+            context, 
+            (CUstream) jit_cuda_stream(),
+            m_gas_handle, 
+            (CUdeviceptr) compact_buffer,
+            compact_size, 
+            &m_gas_handle
+        ));
+        jit_free(output_buffer);
+        output_buffer = compact_buffer;
+    }
+    m_d_gas_buffer = output_buffer;
+
+    // Create SRT motion transform
+    uint32_t num_keys               = timesteps();
+    size_t srt_transform_size_bytes = sizeof(OptixSRTMotionTransform) +
+                                      (num_keys - 2) * sizeof(OptixSRTData);
+    OptixSRTMotionTransform *srt_motion_transform =
+        (OptixSRTMotionTransform *) jit_malloc(AllocType::Host, srt_transform_size_bytes);
+    srt_motion_transform->child = m_gas_handle;
+    srt_motion_transform->motionOptions.numKeys   = (unsigned short) num_keys;
+    srt_motion_transform->motionOptions.flags     = OPTIX_MOTION_FLAG_NONE;
+    srt_motion_transform->motionOptions.timeBegin = 0.0f;
+    srt_motion_transform->motionOptions.timeEnd   = 1.0f;
+
+    std::vector<OptixSRTData> srt_data;
+    srt_data.resize(num_keys);
+    for (uint32_t key = 0; key < num_keys; key++) 
+    {
+        // set srt data for each frame
+        dr::Matrix<ScalarFloat32, 4> matrix(
+            (m_animated_transform.get()->get_transform_step(key)).matrix);
+        auto [M, Q, T] = dr::transform_decompose<ScalarFloat32>(matrix);
+        srt_data[key].sx = M.entry(0, 0);
+        srt_data[key].sy = M.entry(1, 1);
+        srt_data[key].sz = M.entry(2, 2);
+        srt_data[key].qx = Q.entry(0);
+        srt_data[key].qy = Q.entry(1);
+        srt_data[key].qz = Q.entry(2);
+        srt_data[key].qw = Q.entry(3);
+        srt_data[key].tx = T.entry(0);
+        srt_data[key].ty = T.entry(1);
+        srt_data[key].tz = T.entry(2);
+    }
+
+    memcpy(srt_motion_transform->srtData, srt_data.data(), num_keys * sizeof(OptixSRTData));
+
+    m_d_srt_motion_transform = jit_malloc(AllocType::Device, srt_transform_size_bytes);
+    jit_memcpy(JitBackend::CUDA, m_d_srt_motion_transform, srt_motion_transform, srt_transform_size_bytes);
+
+    jit_optix_check(optixConvertPointerToTraversableHandle(
+        context, 
+        (CUdeviceptr) m_d_srt_motion_transform,
+        OPTIX_TRAVERSABLE_TYPE_SRT_MOTION_TRANSFORM,
+        &m_srt_motion_transform_handle
+    ));
+
+    jit_free(srt_motion_transform);
+
+    // Prepare root IAS
+    float T[12] = { (float) transf.matrix(0, 0), (float) transf.matrix(0, 1),
+                    (float) transf.matrix(0, 2), (float) transf.matrix(0, 3),
+                    (float) transf.matrix(1, 0), (float) transf.matrix(1, 1),
+                    (float) transf.matrix(1, 2), (float) transf.matrix(1, 3),
+                    (float) transf.matrix(2, 0), (float) transf.matrix(2, 1),
+                    (float) transf.matrix(2, 2), (float) transf.matrix(2, 3) };
+    // Check whether transformation should be disabled on the IAS
+    uint32_t flags         = (transf == ScalarTransform4f())
+                                 ? OPTIX_INSTANCE_FLAG_DISABLE_TRANSFORM
+                                 : OPTIX_INSTANCE_FLAG_NONE;
+    OptixInstance instance = {
+        { T[0], T[1], T[2], T[3], T[4], T[5], T[6], T[7], T[8], T[9], T[10], T[11] },
+        instance_id, m_sbt_offset, /* visibilityMask = */ 255,
+        flags, m_srt_motion_transform_handle
+    };
+    instances.push_back(instance);
 }
 #endif
 

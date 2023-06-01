@@ -275,6 +275,13 @@ public:
     using Base::m_optix_data_ptr;
     virtual void optix_prepare_geometry() override;
     virtual void optix_build_input(OptixBuildInput&) const override;
+    void optix_prepare_ias(const OptixDeviceContext &context,
+                           std::vector<OptixInstance> &instances,
+                           uint32_t instance_id,
+                           const ScalarTransform4f &transf) override;
+    void optix_fill_hitgroup_records(
+        std::vector<HitGroupSbtRecord> &hitgroup_records,
+        const OptixProgramGroup *program_groups) override;
 #endif
 
     /// @}
@@ -470,6 +477,14 @@ protected:
 
 #if defined(MI_ENABLE_EMBREE)
     RTCScene m_embree_scene = nullptr;
+#endif
+
+#if defined(MI_ENABLE_CUDA)
+    uint32_t m_sbt_offset;
+    void *m_d_gas_buffer = nullptr;
+    OptixTraversableHandle m_gas_handle;
+    void *m_d_srt_motion_transform = nullptr;
+    OptixTraversableHandle m_srt_motion_transform_handle;
 #endif
 };
 
