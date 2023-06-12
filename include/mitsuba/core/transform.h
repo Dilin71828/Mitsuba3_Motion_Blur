@@ -395,151 +395,6 @@ public:
     /// Instantiate a animated transform from a \ref Properties object
     AnimatedTransform(const Properties &props);
 
-#if 0
-    /// Represents a single keyframe in an animated transform
-    struct Keyframe {
-        /// Time value associated with this keyframe
-        Float time;
-
-        /// 3x3 scale/shear matrix
-        Matrix3f scale;
-
-        /// Rotation quaternion
-        Quaternion4f quat;
-
-        /// 3D translation
-        Vector3f trans;
-
-        Keyframe(const Float time, const Matrix3f &scale,
-                 const Quaternion4f &quat, const Vector3f &trans)
-            : time(time), scale(scale), quat(quat), trans(trans) { }
-
-        bool operator==(const Keyframe &f) const {
-            return (time == f.time && scale == f.scale
-                 && quat == f.quat && trans == f.trans);
-        }
-
-        bool operator!=(const Keyframe &f) const {
-            return !operator==(f);
-        }
-    };
-
-    /// Create an empty animated transform
-    AnimatedTransform() = default;
-
-//     /** Create a constant "animated" transform.
-//      * The provided transformation will be used as long as no keyframes
-//      * are specified. However, it will be overwritten as soon as the
-//      * first keyframe is appended.
-//      */
-    AnimatedTransform(const Transform4f &trafo)
-      : m_transform(trafo) { }
-
-    /// Append a keyframe to the current animated transform
-    void append(Float time, const Transform4f &trafo);
-
-    /// Append a keyframe to the current animated transform
-    void append(const Keyframe &keyframe);
-
-    // TODO move this method definition to transform.cpp
-    /// Compatibility wrapper, which strips the mask argument and invokes \ref eval()
-    template <typename T>
-    Transform<Point<T, 4>> eval(T time, dr::mask_t<T> active = true) const {
-        using Index        = dr::uint32_array_t<T>;
-        using Value        = dr::replace_scalar_t<T, Float>; // ensure we are working with Float32
-        using Matrix3f     = dr::Matrix<Value, 3>;
-        using Matrix4f     = dr::Matrix<Value, 4>;
-        using Quaternion4f = dr::Quaternion<Value>;
-        using Vector3f     = Vector<Value, 3>;
-
-        static_assert(!std::is_integral_v<T>,
-                      "AnimatedTransform::eval() should be called with a "
-                      "floating point-typed `time` parameter");
-
-        DRJIT_MARK_USED(time);
-        DRJIT_MARK_USED(active);
-        return Transform<Point<T, 4>>(m_transform.matrix);
-
-        // TODO
-        // // Perhaps the transformation isn't animated
-        // if (likely(size() <= 1))
-        //     return Transform<Point<T, 4>>(m_transform.matrix);
-
-        // // Look up the interval containing 'time'
-        // Index idx0 = math::find_interval(
-        //     (uint32_t) size(),
-        //     [&](Index idx) {
-        //         constexpr size_t Stride_ = sizeof(Keyframe); // MSVC: have to redeclare constexpr variable in lambda scope :(
-        //         return 
-        // <Value, Stride_>(m_keyframes.data(), idx, active) < time;
-        //     });
-
-        // Index idx1 = idx0 + 1;
-
-        // // Compute constants describing the layout of the 'Keyframe' data structure
-        // constexpr size_t Stride      = sizeof(Keyframe);
-        // constexpr size_t ScaleOffset = offsetof(Keyframe, scale) / sizeof(Float);
-        // constexpr size_t QuatOffset  = offsetof(Keyframe, quat)  / sizeof(Float);
-        // constexpr size_t TransOffset = offsetof(Keyframe, trans) / sizeof(Float);
-
-        // // Compute the relative time value in [0, 1]
-        // Value t0 = dr::gather<Value, Stride, false>(m_keyframes.data(), idx0, active),
-        //       t1 = dr::gather<Value, Stride, false>(m_keyframes.data(), idx1, active),
-        //       t  = dr::minimum(dr::maximum((time - t0) / (t1 - t0), 0.f), 1.f);
-
-        // // Interpolate the scale matrix
-        // Matrix3f scale0 = dr::gather<Matrix3f, Stride, false>((Float *) m_keyframes.data() + ScaleOffset, idx0, active),
-        //          scale1 = dr::gather<Matrix3f, Stride, false>((Float *) m_keyframes.data() + ScaleOffset, idx1, active),
-        //          scale  = scale0 * (1 - t) + scale1 * t;
-
-        // // Interpolate the rotation quaternion
-        // Quaternion4f quat0 = dr::gather<Quaternion4f, Stride, false>((Float *) m_keyframes.data() + QuatOffset, idx0, active),
-        //              quat1 = dr::gather<Quaternion4f, Stride, false>((Float *) m_keyframes.data() + QuatOffset, idx1, active),
-        //              quat = dr::slerp(quat0, quat1, t);
-
-        // // Interpolate the translation component
-        // Vector3f trans0 = dr::gather<Vector3f, Stride, false>((Float *) m_keyframes.data() + TransOffset, idx0, active),
-        //          trans1 = dr::gather<Vector3f, Stride, false>((Float *) m_keyframes.data() + TransOffset, idx1, active),
-        //          trans = trans0 * (1 - t) + trans1 * t;
-
-        // return Transform<Point<T, 4>>(
-        //     dr::transform_compose<Matrix4f>(scale, quat, trans),
-        //     dr::transform_compose_inverse<Matrix4f>(scale, quat, trans)
-        // );
-    }
-
-    /**
-     * \brief Return an axis-aligned box bounding the amount of translation
-     * throughout the animation sequence
-     */
-    BoundingBox3f translation_bounds() const;
-
-    /// Determine whether the transformation involves any kind of scaling
-    bool has_scale() const;
-
-    /// Return the number of keyframes
-    size_t size() const { return m_keyframes.size(); }
-
-    /// Return a Keyframe data structure
-    const Keyframe &operator[](size_t i) const { return m_keyframes[i]; }
-
-    /// Equality comparison operator
-    bool operator==(const AnimatedTransform &t) const {
-        if (m_transform != t.m_transform ||
-            m_keyframes.size() != t.m_keyframes.size()) {
-            return false;
-        }
-        for (size_t i = 0; i < m_keyframes.size(); ++i) {
-            if (m_keyframes[i] != t.m_keyframes[i])
-                return false;
-        }
-        return true;
-    }
-
-    bool operator!=(const AnimatedTransform &t) const {
-        return !operator==(t);
-    }
-#endif
     /// Return the number of timesteps
     uint32_t timestep_count() const { return m_timestep_count; }
 
@@ -606,7 +461,6 @@ public:
                         dr::gather<FloatP>(m_scales_rearranged[x * 3 + y].data(), idx1) * t;
                 }            
             }
-            //std::cout << M << '\n';
 
             Quaternion4fP Q0, Q1, Q;
             for (uint32_t x = 0; x < 4; x++) {
@@ -616,7 +470,6 @@ public:
                     dr::gather<FloatP>(m_rotations_rearranged[x].data(), idx1);
             }
             Q = dr::slerp(Q0, Q1, t);
-            //std::cout << Q0 << '\n' << Q1 << '\n' << Q << '\n';
 
             Vector3fP T;
             for (uint32_t x = 0; x < 3; x++) {
@@ -624,14 +477,12 @@ public:
                     dr::gather<FloatP>(m_translations_rearranged[x].data(), idx0) * (1 - t) +
                     dr::gather<FloatP>(m_translations_rearranged[x].data(), idx1) * t;
             }
-            //std::cout << T << '\n';
 
             return Transform4fP(dr::transform_compose<Matrix4fP>(M, Q, T));
 
         } 
         else {
             Matrix3fP M = m_scales[idx0] * (1 - t) + m_scales[idx1] * t;
-            //std::cout << M0 << '\n' << M1 << '\n' << M << '\n';
         
             Quaternion4fP Q = dr::slerp(m_rotations[idx0], m_rotations[idx1], t);
         
